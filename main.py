@@ -94,7 +94,7 @@ def main():
         st.session_state.current_profile
     )
 
-# ---------------------------------------------------------
+    # ---------------------------------------------------------
     # Phase 5: Soft-Weight Scoring Engine & Intelligent Presentation
     # ---------------------------------------------------------
     final_shortlist = calculate_final_rankings(viable_trails, st.session_state.current_profile)
@@ -149,4 +149,4 @@ def main():
             st.markdown(sug)
 
 if __name__ == "__main__":
-    main()--
+    main()
