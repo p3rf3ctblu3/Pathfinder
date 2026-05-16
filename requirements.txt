@@ -1,0 +1,6 @@
+streamlit
+streamlit-js-eval
+crewai
+pydantic
+requests
+python-dotenv
