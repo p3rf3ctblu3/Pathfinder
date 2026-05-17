@@ -16,14 +16,6 @@ shared_llm = LLM(
     api_key=groq_key 
 )
 
-# gemini_key = os.environ.get("GEMINI_API_KEY")
-
-# shared_llm = LLM(
-#     model="gemini/gemini-2.5-flash",    
-#     temperature=0.0,                    
-#     api_key=gemini_key 
-# )
-
 #  User Profile Schema
 class UserProfileSchema(BaseModel):
     hiker_expertise: Optional[int] = Field(
