@@ -1,6 +1,6 @@
 import json
 import os
-import requests
+import re
 from typing import List, Optional, Dict, Any
 from crewai import Agent, Crew, Process, Task, LLM
 from dotenv import load_dotenv
@@ -92,6 +92,43 @@ class ProfileUpdateSchema(BaseModel):
     )
 
 # AGENTS
+
+def evaluate_interests_with_llm(user_interests: list, trail_description: str) -> float:
+    """
+    Uses a fast LLM call to semantically score how well the 
+    trail description satisfies the user's specific interests.
+    """
+    if not user_interests or not trail_description:
+        return 0.0
+        
+    interests_str = ", ".join(user_interests)
+    
+    # Example prompt using your existing LLM infrastructure
+    prompt = f"""
+    You are an expert hiking guide analyst. 
+    Rate how well the following trail description matches the user's list of interests.
+    
+    User Interests: {interests_str}
+    Trail Description: {trail_description}
+    
+    Provide a match score as a float between 0.0 (no match at all) and 1.0 (perfect semantic match).
+    Respond ONLY with the float number. Do not include any other text.
+    """
+
+    # -------------- EXACT SYNTAX DEPENDS ON LLM WE USE ----------------
+    try:
+        # Use CrewAI's .call() method
+        response = shared_llm.call(
+            messages=[{"role": "user", "content": prompt}]
+        )
+        
+        match = re.search(r"\d+\.\d+|\d+", response.strip())
+        if match:
+            return max(0.0, min(1.0, float(match.group())))
+        return 0.0
+    except Exception as e:
+        print(f"Groq CrewAI Call Error: {e}")
+        return 0.0
 
 def run_gatekeeper_agent(user_input: str, current_profile: dict) -> ProfileUpdateSchema:
     """

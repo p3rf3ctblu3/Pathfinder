@@ -71,6 +71,7 @@ def calculate_crowding_penalty(nuts3_code: str, sensitivity_k: float = 0.0005) -
 #                           TRAIL MATCH SCORES 
 # ==============================================================================
 
+
 def calculate_trail_match_scores(trail, profile, difficulty_mult=0.33, duration_mult=0.33, interests_mult=0.33):
     """
     Evaluates a trail's compatibility based on three parameters: 
@@ -138,15 +139,11 @@ def calculate_trail_match_scores(trail, profile, difficulty_mult=0.33, duration_
             score_duration = 1.0
     
     trail_description = trail.get("description", "")
-    if user_interests and trail_description:
-        matched_keywords_count = 0
-        for keyword in user_interests:
-            if not keyword: continue
-            pattern = re.compile(rf"\b{re.escape(str(keyword).strip())}\b", re.IGNORECASE)
-            if pattern.search(trail_description):
-                matched_keywords_count += 1
-        score_interests = min(1.0, matched_keywords_count * 0.25)
 
+    score_interests = PathfinderAnalystCrew.evaluate_trail_interests_with_agent(
+        user_interests=user_interests, 
+        trail_description=trail_description
+    )
     # Extract the NUTS3 region code from the current trail data block
     trail_nuts3 = trail.get("nuts3_code") or "UNKNOWN"
     
@@ -173,6 +170,7 @@ def calculate_trail_match_scores(trail, profile, difficulty_mult=0.33, duration_
         "crowding_label": crowding_data["crowding_description"],
         "penalty_subtracted": penalty_multiplier
     }
+
 
 # ==================================
 # SPATIAL ROUTING ENGINE FUNCTIONS
@@ -272,7 +270,7 @@ def filter_trails_spatial(trails, strategy, profile, gps):
 
     return viable_trails
 
-TRAILS_FILE_PATH = "/trail_dir/greek_trails_directory_enriched.json"
+TRAILS_FILE_PATH = "trail_dir/greek_trails_directory_enriched.json"
 
 @st.cache_data(show_spinner=False)
 def load_directory_cached():

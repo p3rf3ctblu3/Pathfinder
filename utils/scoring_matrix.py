@@ -1,6 +1,9 @@
-import re
-from crowding_penalty import calculate_crowding_penalty
+from .crowding_penalty import calculate_crowding_penalty
+import os
+import sys
 
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from agents import PathfinderAnalystCrew
 # ==============================================================================
 #                           TRAIL MATCH SCORES 
 # ==============================================================================
@@ -72,15 +75,11 @@ def calculate_trail_match_scores(trail, profile, difficulty_mult=0.33, duration_
             score_duration = 1.0
     
     trail_description = trail.get("description", "")
-    if user_interests and trail_description:
-        matched_keywords_count = 0
-        for keyword in user_interests:
-            if not keyword: continue
-            pattern = re.compile(rf"\b{re.escape(str(keyword).strip())}\b", re.IGNORECASE)
-            if pattern.search(trail_description):
-                matched_keywords_count += 1
-        score_interests = min(1.0, matched_keywords_count * 0.25)
 
+    score_interests = PathfinderAnalystCrew.evaluate_trail_interests_with_agent(
+        user_interests=user_interests, 
+        trail_description=trail_description
+    )
     # Extract the NUTS3 region code from the current trail data block
     trail_nuts3 = trail.get("nuts3_code") or "UNKNOWN"
     
