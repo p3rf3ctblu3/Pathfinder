@@ -8,6 +8,7 @@ import os
 import time 
 import math
 import re
+import json
 
 # INCLUDES LIVE JSON SIDE WINDOW AND PRINTS MULTIPLIERS AND SCORES FOR ALL RECOMMENDED TRAILS
 
@@ -271,26 +272,27 @@ def filter_trails_spatial(trails, strategy, profile, gps):
 
     return viable_trails
 
+TRAILS_FILE_PATH = "/trail_dir/greek_trails_directory_enriched.json"
+
 @st.cache_data(show_spinner=False)
 def load_directory_cached():
     """
-    Safely fetches and caches Greek trails.
+    Directly loads the static pre-compiled JSON trails registry database.
+    Returns a tuple: (dict/list of trails_data, status_string)
     """
     try:
-        from agents import WaymarkedDirectoryManager
-        
-        import os
-        print(f"Streamlit frontend is looking for: {WaymarkedDirectoryManager.CACHE_FILENAME}")
-        print(f"Does the file exist right now? {os.path.exists(WaymarkedDirectoryManager.CACHE_FILENAME)}")
-        
-        trails = WaymarkedDirectoryManager.fetch_all_greek_trails()
-        
-        if trails and len(trails) > 0:
-            return trails, "READY"
-        return [], "FAILED: Server returned 0 trails. Check rate-limits."
+        if not os.path.exists(TRAILS_FILE_PATH):
+            raise FileNotFoundError(f"Missing core database asset file target: '{TRAILS_FILE_PATH}'")
+            
+        with open(TRAILS_FILE_PATH, "r", encoding="utf-8") as f:
+            trails_data = json.load(f)
+            
+        status_string = "READY"
+        return trails_data, status_string
         
     except Exception as e:
-        return [], f"FAILED: {str(e)}"
+        status_string = f"FAILED: Unexpected systemic read interruption. Error: {str(e)}"
+        return [], status_string
 
 
 def main():

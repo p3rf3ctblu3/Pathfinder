@@ -6,7 +6,7 @@ import os
 import time 
 from utils import calculate_trail_match_scores, filter_trails_spatial
 
-TRAILS_FILE_PATH = "greek_trails_directory_enriched.json"
+TRAILS_FILE_PATH = "/trail_dir/greek_trails_directory_enriched.json"
 
 @st.cache_data(show_spinner=False)
 def load_directory_cached():
