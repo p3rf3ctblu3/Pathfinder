@@ -1,18 +1,26 @@
 import json
 import os
 import requests
-from typing import List, Optional
-from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
 from crewai import Agent, Crew, Process, Task, LLM
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field
 
 load_dotenv()
+
+# groq_key = os.environ.get("GROQ_API_KEY")
+
+# shared_llm = LLM(
+#     model="groq/llama-3.3-70b-versatile",
+#     temperature=0.0,                   
+#     api_key=groq_key 
+# )
 
 gemini_key = os.environ.get("GEMINI_API_KEY")
 
 shared_llm = LLM(
-    model="gemini/gemini-2.5-flash", 
-    temperature=0.0, # 🟢 CRITICAL: Set to 0.0 to eliminate ALL creative guessing/hallucinations
+    model="gemini/gemini-2.5-flash",    
+    temperature=0.0,                    
     api_key=gemini_key 
 )
 
@@ -20,20 +28,17 @@ shared_llm = LLM(
 # PHASE 1: Zero-Hallucination User Profile Schema
 # ==============================================================================
 class UserProfileSchema(BaseModel):
-    # 🟢 FORCE default=None and explicit "MUST be null" instructions inside descriptions
-    sac_ability: Optional[int] = Field(
+    hiker_expertise: Optional[int] = Field(
         default=None, 
         description="The hiker's permanent fitness ceiling (1-6). CRITICAL: If the chat history does not explicitly state or clearly imply their experience level, you MUST output null."
     )
-    sac_intent: Optional[int] = Field(
+    hiker_intent: Optional[int] = Field(
         default=None, 
         description="The target difficulty for this specific session (1-6). CRITICAL: If they haven't requested a specific difficulty or intensity yet, you MUST output null."
     )
-    
-    # SPATIAL TRACKING ATTRIBUTES
     location_value: Optional[str] = Field(
         default=None, 
-        description="A explicit place or region name mentioned by the user (e.g., 'Attica', 'Thessaloniki')."
+        description="An explicit place or region name mentioned by the user (e.g., 'Attica', 'Thessaloniki')."
     )
     max_travel_time: Optional[int] = Field(
         default=None, 
@@ -52,7 +57,6 @@ class UserProfileSchema(BaseModel):
             "- null: If they have not given any geographic hints yet."
         )
     )
-
     min_trail_duration_hours: Optional[float] = Field(
         default=None, 
         description="The lowest acceptable hike time limit in hours. If not specified, you MUST output null."
@@ -70,22 +74,36 @@ class ExtractionResultSchema(BaseModel):
     profile: UserProfileSchema
     response: str = Field(
         ..., 
-        description="A warm, casual 1-2 sentence response. Acknowledge what they said, then naturally ask for just ONE missing piece of info."
+        description="A warm, rich, enthusiastic response! Acknowledge what they said without repeating explicitly, then naturally ask for just ONE missing piece of info."
     )
+
+# ==============================================================================
+# NEW ANALYST SCHEMAS FOR STRUCTURED EXTRACTION
+# ==============================================================================
+class WeightAnalysisSchema(BaseModel):
+    difficulty_multiplier: float = Field(..., description="A float value between 0.0 and 1.0 reflecting how strictly the trail difficulty matters to the user.")
+    duration_multiplier: float = Field(..., description="A float value between 0.0 and 1.0 reflecting how strictly the duration window matters to the user.")
 
 # ==============================================================================
 # PHASE 2: Waymarked Master Directory Generator (Direct Cache Builder)
 # ==============================================================================
 class WaymarkedDirectoryManager:
+    CACHE_FILENAME = "greek_trails_directory_enriched.json"
+
+    @classmethod
+    def fetch_all_greek_trails(cls) -> List[dict]:
+        if not os.path.exists(cls.CACHE_FILENAME):
+            print("💾 Cache file missing. Querying Overpass API to generate master registry...")
+            build_status = cls.build_local_directory_cache()
+            if "FAILED" in build_status:
+                raise Exception(build_status)
+
+        with open(cls.CACHE_FILENAME, "r", encoding="utf-8") as f:
+            return json.load(f)
+
     @staticmethod
     def build_local_directory_cache() -> str:
-        """
-        Queries the Overpass API once to fetch every official waymarked hiking route 
-        within the national borders of Greece and compiles them into a local JSON cache.
-        """
-        cache_filename = "greek_trails_directory.json"
-        
-        # Pulling exact relations matching waymarkedtrails.org hiking specifications
+        cache_filename = "greek_trails_directory_enriched.json"
         overpass_query = """
         [out:json][timeout:90];
         area["ISO3166-1"="GR"]["admin_level"="2"]->.greece;
@@ -104,11 +122,34 @@ class WaymarkedDirectoryManager:
                     tags = el.get("tags", {})
                     center = el.get("center", {})
                     
+                    # Compute custom_difficulty_score (1-6) derived from standard sac_scale
+                    sac = tags.get("sac_scale", "hiking")
+                    difficulty_map = {
+                        "hiking": 1, "mountain_hiking": 2, "demanding_mountain_hiking": 3,
+                        "alpine_hiking": 4, "demanding_alpine_hiking": 5, "difficult_alpine_hiking": 6
+                    }
+                    computed_score = difficulty_map.get(sac, 1)
+
+                    # Dynamic custom parsing rule to find explicit 'duration' tag arrays
+                    duration_val = None
+                    if "duration" in tags:
+                        try:
+                            # If tag is written like "02:30", convert to decimal hours (2.5)
+                            if ":" in tags["duration"]:
+                                h, m = map(float, tags["duration"].split(":"))
+                                duration_val = h + (m / 60.0)
+                            else:
+                                duration_val = float(tags["duration"])
+                        except ValueError:
+                            pass
+
                     processed_directory.append({
                         "osm_id": el.get("id"),
                         "name": tags.get("name", tags.get("ref", f"Waymarked Route {el.get('id')}")),
-                        "sac_scale": tags.get("sac_scale", "hiking"),
+                        "sac_scale": sac,
+                        "custom_difficulty_score": computed_score,
                         "distance_km": float(tags.get("distance")) if tags.get("distance") else None,
+                        "duration_hours": duration_val,
                         "lat": center.get("lat"),
                         "lon": center.get("lon"),
                         "description": tags.get("description", "")
@@ -121,28 +162,91 @@ class WaymarkedDirectoryManager:
             return f"CACHE_GENERATION_FAILED: {str(e)}"
         return "NO_DATA_RETURNED"
 
+# 1. Define the exact schema the Agent MUST return
+class ProfileUpdateSchema(BaseModel):
+    updated_profile_fields: Dict[str, Any] = Field(
+        description="Dictionary of keys and values to add or update in the user profile."
+    )
+    fields_to_remove: List[str] = Field(
+        description="List of profile keys that conflict with the new user intent and must be deleted."
+    )
+    reset_gps: bool = Field(
+        description="Set to True if the user changed the physical location/region of their hike."
+    )
+
+# 2. Configure the Gatekeeper Agent Task
+def run_gatekeeper_agent(user_input: str, current_profile: dict) -> ProfileUpdateSchema:
+    """
+    An isolated, specialized agent task that handles user state mutations.
+    """
+    gatekeeper_prompt = f"""
+    You are a precise Profile Gatekeeper Agent for a hiking application.
+    Your sole task is to compare a user's new message against their current profile state
+    and determine if they are changing their mind, correcting a parameter, or pivoting destinations.
+
+    Current Profile State: {current_profile}
+    New User Message: "{user_input}"
+
+    Instructions:
+    - If they change location (e.g., 'Athens instead of Corfu'), update target_region and set reset_gps to True.
+    - If they change duration (e.g., 'make it shorter'), update max_trail_duration_hours and list 'min_trail_duration_hours' in fields_to_remove if they conflict.
+    - If they change difficulty, adjust hacker_expertise or hiker_intent.
+    """
+    
+    # Force the LLM to respond strictly using your Pydantic schema
+    structured_llm = shared_llm.with_structured_output(ProfileUpdateSchema)
+    
+    try:
+        agent_delta = structured_llm.invoke(gatekeeper_prompt)
+        return agent_delta
+    except Exception:
+        # Safe fallback structure if the agent hits a schema error
+        return ProfileUpdateSchema(updated_profile_fields={}, fields_to_remove=[], reset_gps=False)
 
 # ==============================================================================
-# PHASE 3: Define your Factory Agent
+# PHASE 3: Define your Factory Agents
 # ==============================================================================
 class PathfinderAgents:
-    def user_profiler(self):
+    def user_profiler(self) -> Agent:
         return Agent(
-            role="User Profiler",
-            goal="Extract real-time filtering parameters from text transcripts without inventing or assuming details.",
+            role="Expert Local Greek Hiking Guide",
+            goal=(
+                "Engage the hiker in a warm, enthusiastic conversation to naturally discover "
+                "their trail preferences (intent, expertise, scenic interests, duration, and location) "
+                "while extracting accurate profile data behind the scenes."
+            ),
             backstory=(
-                "You are a strict data verification engine. You have zero imagination. "
-                "If the user has not explicitly typed information or clearly implied it during the chat history, "
-                "you consider filling that field to be a system failure. You default to null for every value "
-                "unless proof exists in the transcript."
+                "You are an incredibly warm, creative, and enthusiastic local Greek hiking guide. "
+                "You treat every hiker like an old friend visiting your homeland. You don't interrogate "
+                "people; instead, you weave your questions into narrative warmth.\n"
+                "While your conversational heart is bursting with hospitality and creativity, your analytical "
+                "mind is sharp: you carefully map their answers to the structured profile fields. If a user "
+                "explicitly mentions they don't care about a specific metric, you gracefully leave it as null. "
+                "You never stop asking charming, engaging questions until you have successfully explored all "
+                "four core pillars of their dream hike. Don't be overly verbose."
             ),
             llm=shared_llm,
             verbose=True
         )
 
+    def intent_analyst(self) -> Agent:
+        return Agent(
+            role="Hiker Intent Analyst",
+            goal="Analyze conversation history to determine user preferences and calculate importance multipliers.",
+            backstory=(
+                "You are an analytical psychologist specializing in outdoor recreation behavior. "
+                "Your job is to read the entire chat transcript and determine how uncompromising the user is "
+                "about different variables. For example, if a user emphasizes 'I absolutely cannot hike "
+                "more than 2 hours' but says 'I don't really care about the difficulty', you will assign a "
+                "much higher multiplier weight to duration than difficulty. You output precise importance "
+                "multipliers between 0.0 and 1.0."
+            ),
+            llm=shared_llm,
+            verbose=True
+        )
 
 # ==============================================================================
-# PHASE 4: The Crew Orchestrator Called by main.py
+# PHASE 4: The Crew Orchestrators Called by main.py
 # ==============================================================================
 class PathfinderCrew:
     def __init__(self):
@@ -157,45 +261,43 @@ class PathfinderCrew:
                 "--------------------------------------------------\n"
                 f"{full_history}\n"
                 "--------------------------------------------------\n\n"
-                "Your Rules for Mapping Implicit Data:\n"
-                "1. STRICT ZERO-HALLUCINATION GUARDRAILS:\n"
-                "   - You are generating search query parameters. Guessing or inventing values will completely ruin the search results.\n"
-                "   - If the user explicitly states they do not care about the location, or says 'anywhere in Greece', set `location_value` = 'Greece' and set `spatial_strategy` = 'GEOLOCATOR'.\n"
-                "   - If the user ONLY says a location like 'Attica', then `location_value` must be 'Attica', and EVERY other parameter inside the profile block MUST BE null (interests should be []).\n"
-                "   - Do not guess transit modes, do not guess default hiking capabilities, and do not fill out duration hours unless words about time were explicitly typed.\n\n"
-                "2. SAC_ABILITY VS SAC_INTENT CALCULATOR:\n"
-                "   - Only map these if they mention experience or difficulty. Otherwise leave as null.\n"
-                "   - If an elite/advanced hiker explicitly asks for something 'easy', 'flat', or 'relaxing', set `sac_intent` to exactly one or two levels BELOW their `sac_ability` (e.g., ability=6, intent=4).\n"
-                "   - If a beginner explicitly requests a 'big challenge', set `sac_intent` exactly one level ABOVE their true `sac_ability` (e.g., ability=2, intent=3).\n\n"
-                "3. DURATION RANGE PARSING RULES:\n"
-                "   - If the user explicitly states they do not care about the duration, or says 'any duration' / 'no limit', set `min_trail_duration_hours` = 0.0 and `max_trail_duration_hours` = 16.0.\n"
-                "   - 'around 1-2 hours' -> min_trail_duration_hours = 1.0, max_trail_duration_hours = 2.0.\n"
-                "   - 'around 2 hours' -> min_trail_duration_hours = 1.5, max_trail_duration_hours = 2.5.\n"
-                "   - 'at most X hours' -> min_trail_duration_hours=null, max_trail_duration_hours=X.\n"
-                "   - 'at least X hours' -> min_trail_duration_hours=X, max_trail_duration_hours=null."
-                "4. SPATIAL OVERRIDE HIERARCHY RULES:\n"
-                "   - If the user says '30 minutes from here by car', set `max_travel_time` = 30, `travel_mode` = 'car', and set `spatial_strategy` = 'ISOCHRONE'.\n"
-                "   - If the user only mentions a static area like 'Attica', set `location_value` = 'Attica', and set `spatial_strategy` = 'GEOLOCATOR'.\n"
-                "   - OVERRIDE RULE: If the user names an area AND requests a time boundary relative to 'here' simultaneously (e.g., 'I am in Attica, look for things 30 mins from here')\n" 
-                "   -, the Isochrone parameter takes complete precedent. Set `spatial_strategy` = 'ISOCHRONE', capture the time constraints, and keep the location string.\n"
+                "Your Rules for Mapping Implicit Data & Setting Conversational Attitude:\n\n"
+                "1. TONAL IDENTITY, CREATIVITY, & EMPATHY (THE 'LOCAL GUIDE' PERSONA):\n"
+                "   - You are an incredibly friendly, warm, and highly creative local Greek hiking guide. You are NOT an interrogation machine.\n"
+                "   - NEVER parrot back what the user says verbatim. Acknowledge choices with narrative warmth: 'Ah, an afternoon stroll among the gnarled olive groves sounds like absolute magic! Let's find you that perfect breeze...'\n"
+                "   - READ BETWEEN THE LINES (IMPLICIT STATEMENT PARSING):\n"
+                "     * If the user says 'My feet are killing me' or 'I'm recovering from a knee injury', immediately deduce that they need gentle terrain. Set `hiker_intent` and `hiker_expertise` to 1, and offer comfort.\n"
+                "     * If they say 'I want to capture the perfect golden hour light over the sea', instantly tag their `interests` as ['photography'].\n\n"
+                "2. HARD OVERRIDES FOR DIFFICULTIES & ABILITIES:\n"
+                "   - If the user explicitly requests a specific difficulty style (e.g., 'I want an easy hike'), DO NOT ask them about their baseline capability or background.\n"
+                "   - RULE: An explicit request for an easy trail completely bypasses dynamic ability checking. Instantly set BOTH `hiker_intent` and `hiker_expertise` to the exact same low-tier level (Level 1 or 2 depending on context).\n"
+                "   - TRANSLATION MATRIX:\n"
+                "     * Beginner, amateur, casual walker, 'done 1-3 hikes' -> Level 1 or 2.\n"
+                "     * Regular hiker, good fitness -> Level 3 or 4.\n"
+                "     * Advanced, alpine, elite climber -> Level 5 or 6.\n"
+                "   - INTENT ADJUSTMENT: If an amateur (expertise 1-2) explicitly requests a 'massive challenge', keep expertise at 1-2, but set `hiker_intent` to 3 or 4.\n\n"
+                "3. SPATIAL OVERRIDE HIERARCHY & REDUNDANCY SILENCING:\n"
+                "   - If the user provides a relative restriction based on time or distance (e.g., 'Give me something 45 minutes from here by car'), DO NOT ASK THEM WHERE THEY ARE.\n"
+                "     * For time expressions ('X minutes from here'): Set `spatial_strategy` = 'ISOCHRONE', capture `max_travel_time` = X, and extract `travel_mode` ('car', 'foot').\n"
+                "   - If they state they do not care about the location or say 'anywhere in Greece', set `spatial_strategy` = 'GEOLOCATOR'. Keep a field value explicitly as `null` if they state they 'don't care' about that specific metric.\n\n"
+                "4. COMPULSORY CORE ACQUISITION GATES:\n"
+                "   - CRITICAL: You must explicitly ask about or address all 5 pillars of the hike profile at least once during the conversation:\n"
+                "     A) Hiker Intent, B) Hiker Expertise, C) Scenic Interests, D) Desired Duration, E) Starting Location.\n"
+                "   - If the user says 'I don't care', leave that field value as null, but count it as successfully asked/addressed.\n\n"
+                "5. STRICT CONVERSATIONAL DYNAMICS & COMPLETION SIGNAL:\n"
+                "   - Keep asking warm, creative, and enthusiastic questions until you have brought up all 5 dimensions listed in Rule 4."
             ),
-            expected_output="Structured JSON matching the updated profile blueprint and a concise 1-2 sentence response.",
+            expected_output="Structured JSON matching the profile schema, along with a warm, friendly response (1-3 sentences max) prompting ONLY for fields that haven't been discussed yet.",
             agent=profiler,
             output_json=ExtractionResultSchema
         )
 
-        crew = Crew(
-            agents=[profiler],
-            tasks=[profiling_task],
-            process=Process.sequential
-        )
+        crew = Crew(agents=[profiler], tasks=[profiling_task], process=Process.sequential)
 
         try:
             result = crew.kickoff()
-            
             if hasattr(result, 'json_output') and result.json_output:
                 raw_data = result.json_output
-                # Keep fields explicitly clean for Streamlit parsing
                 if "profile" in raw_data and raw_data["profile"]:
                     raw_data["profile"] = {k: v for k, v in raw_data["profile"].items() if v not in [None, "null", "None"]}
                 return raw_data
@@ -205,7 +307,6 @@ class PathfinderCrew:
                 if "profile" in raw_data and raw_data["profile"]:
                     raw_data["profile"] = {k: v for k, v in raw_data["profile"].items() if v not in [None, "null", "None"]}
                 return raw_data
-                
         except Exception as e:
             print(f"Extraction parsing error: {e}")
             
@@ -213,3 +314,46 @@ class PathfinderCrew:
             "profile": {}, 
             "response": "That sounds like an adventure! Tell me, how much time do you have for this hike?"
         }
+
+# ==============================================================================
+# NEW CLASS: PathfinderAnalystCrew
+# ==============================================================================
+class PathfinderAnalystCrew:
+    def __init__(self):
+        self.agent_factory = PathfinderAgents()
+
+    def extract_multipliers(self, chat_history: str) -> dict:
+        analyst = self.agent_factory.intent_analyst()
+
+        analysis_task = Task(
+            description=(
+                f"Analyze the following chat history transcript between our guide and a hiker:\n"
+                f"--------------------------------------------------\n"
+                f"{chat_history}\n"
+                f"--------------------------------------------------\n\n"
+                "Evaluate how uncompromising or flexible the user is about their requested hiking variables:\n"
+                "1. If they stress strict constraints on distance/time thresholds, raise the duration_multiplier.\n"
+                "2. If they stress fitness thresholds, steep inclines, or basic walking limits, raise the difficulty_multiplier.\n\n"
+                "Output rules:\n"
+                "- You MUST output a raw structured JSON object matching the requested schema.\n"
+                "- The difficulty_multiplier and duration_multiplier values must be floats between 0.0 and 1.0."
+            ),
+            expected_output="A structured JSON format payload holding keys 'difficulty_multiplier' and 'duration_multiplier'.",
+            agent=analyst,
+            output_json=WeightAnalysisSchema
+        )
+
+        crew = Crew(agents=[analyst], tasks=[analysis_task], process=Process.sequential)
+
+        try:
+            result = crew.kickoff()
+            if hasattr(result, 'json_output') and result.json_output:
+                return result.json_output
+            
+            if isinstance(result.raw, str):
+                return json.loads(result.raw)
+        except Exception as e:
+            print(f"Analyst extraction parsing error: {e}")
+            
+        # Standard fallback weights if processing hits an exceptional network block
+        return {"difficulty_multiplier": 0.5, "duration_multiplier": 0.5}

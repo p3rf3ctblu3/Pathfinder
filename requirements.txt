@@ -1,6 +1,11 @@
-streamlit
-streamlit-js-eval
-crewai
-pydantic
-requests
-python-dotenv
+streamlit==1.35.0
+streamlit-js-eval==0.1.7
+streamlit-folium==0.18.0
+folium==0.16.0
+crewai==0.32.0
+pydantic==2.7.1
+shapely==2.0.4
+openrouteservice==2.3.3
+geopy==2.4.1
+requests==2.32.3
+python-dotenv==1.0.1
