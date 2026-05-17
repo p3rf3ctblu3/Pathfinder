@@ -78,6 +78,7 @@ class ExtractionResultSchema(BaseModel):
 class WeightAnalysisSchema(BaseModel):
     difficulty_multiplier: float = Field(..., description="A float value between 0.0 and 1.0 reflecting how strictly the trail difficulty matters to the user.")
     duration_multiplier: float = Field(..., description="A float value between 0.0 and 1.0 reflecting how strictly the duration window matters to the user.")
+    interests_multiplier: float = Field(..., description="A float value between 0.0 and 1.0 reflecting how heavily specific thematic preferences, historical interests, or niche scenery features should weight the match.")
 
 class ProfileUpdateSchema(BaseModel):
     updated_profile_fields: Dict[str, Any] = Field(
@@ -236,16 +237,18 @@ class PathfinderAnalystCrew:
 
         analysis_task = Task(
             description=(
-                f"Analyze the following chat history transcript between our guide and a hiker:\n"
+            f"Analyze the following chat history transcript between our guide and a hiker:\n"
                 f"--------------------------------------------------\n"
                 f"{chat_history}\n"
                 f"--------------------------------------------------\n\n"
                 "Evaluate how uncompromising or flexible the user is about their requested hiking variables:\n"
                 "1. If they stress strict constraints on distance/time thresholds, raise the duration_multiplier.\n"
-                "2. If they stress fitness thresholds, steep inclines, or basic walking limits, raise the difficulty_multiplier.\n\n"
+                "2. If they stress fitness thresholds, steep inclines, or basic walking limits, raise the difficulty_multiplier.\n"
+                "3. If they express strong enthusiasm, specific thematic desires (e.g., mythology, archaeology, coastal views), "
+                "or strict dealbreakers regarding trail features, raise the interests_multiplier.\n\n"
                 "Output rules:\n"
                 "- You MUST output a raw structured JSON object matching the requested schema.\n"
-                "- The difficulty_multiplier and duration_multiplier values must be floats between 0.0 and 1.0."
+                "- The difficulty_multiplier, duration_multiplier, and interests_multiplier values must be floats between 0.0 and 1.0."
             ),
             expected_output="A structured JSON format payload holding keys 'difficulty_multiplier' and 'duration_multiplier'.",
             agent=analyst,
