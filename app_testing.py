@@ -81,6 +81,11 @@ def calculate_trail_match_scores(trail, profile, difficulty_mult=0.33, duration_
     
     Weights are safely adjusted via dynamic analyst multipliers.
     """
+    total_weight = float(difficulty_mult) + float(duration_mult) + float(interests_mult)
+    
+    if total_weight == 0:
+        total_weight = 1.0
+
     score_difficulty = 0.0
     score_duration = 0.0
     score_interests = 0.0  
@@ -140,9 +145,11 @@ def calculate_trail_match_scores(trail, profile, difficulty_mult=0.33, duration_
     
     trail_description = trail.get("description", "")
 
-    score_interests = PathfinderAnalystCrew.evaluate_trail_interests_with_agent(
-        user_interests=user_interests, 
-        trail_description=trail_description
+    analyst_crew_instance = PathfinderAnalystCrew()
+
+    score_interests = analyst_crew_instance.evaluate_trail_interests_with_agent(
+    user_interests=user_interests, 
+    trail_description=trail_description
     )
     # Extract the NUTS3 region code from the current trail data block
     trail_nuts3 = trail.get("nuts3_code") or "UNKNOWN"
@@ -157,8 +164,9 @@ def calculate_trail_match_scores(trail, profile, difficulty_mult=0.33, duration_
         (score_interests * float(interests_mult))
     )
 
-    final_composite_score = max(0.0, base_composite_score - penalty_multiplier)
-    
+    raw_final_score = base_composite_score - penalty_multiplier    
+    final_composite_score = max(0.0, min(1.0, raw_final_score / total_weight))
+
     return {
         "composite_score": round(final_composite_score, 3),
         "difficulty_match": score_difficulty,
@@ -168,7 +176,9 @@ def calculate_trail_match_scores(trail, profile, difficulty_mult=0.33, duration_
         
         "crowding_index": crowding_data["crowding_index_1_to_5"],
         "crowding_label": crowding_data["crowding_description"],
-        "penalty_subtracted": penalty_multiplier
+        "penalty_subtracted": penalty_multiplier,
+        
+        "density_val": crowding_data.get("raw_density_score", 0.0)
     }
 
 
@@ -443,7 +453,7 @@ def main():
 
                     # RECOMMEND TRAILS 
                    
-                    if questions_asked >= 5:
+                    if questions_asked >= 3:
 
                         # 1. Broad Spatial Isolation Pool
                         spatial_filtered_trails = filter_trails_spatial(
@@ -541,7 +551,7 @@ def main():
                                 # Fetch raw database values for display clarity
                                 difficulty_num = trail.get("custom_difficulty_score", 1)
                                 distance = trail.get("distance_km", "N/A")
-                                density = analysis.get("density_val") or trail.get("regional_tourist_density", 0.0)
+                                density = analysis.get("density_val") 
                                 crowd_flag = ""
                                 
                                 if 1000 <= density < 2500:
@@ -558,7 +568,8 @@ def main():
                                     f"- **{name}** ➔ **Match: {analysis['composite_score']*100:.1f}%**{crowd_flag}\n"
                                     f"(Diff Match: `{analysis['difficulty_match']}`, "
                                     f"Dur Match: `{analysis['duration_match']}` | est: `{analysis['calculated_duration']} hrs`)\n"
-                                    f"  * *Trail Specs:* Difficulty Score: {difficulty_num}/6 | Est. Duration: `{analysis['calculated_duration']} hrs` ({distance_str}){crowd_flag}\n"
+                                    f"  * *Trail Specs:* Difficulty Score: {difficulty_num}/6 | Est. Duration: `{analysis['calculated_duration']} hrs` ({distance_str})\n"
+                                    f"  * *Density Score:* `{density}`\n"
                                 )
                         else:
                             st.session_state["active_viable_trails"] = []

@@ -157,7 +157,7 @@ def main():
                         strategy = "GEOLOCATOR"
 
                     # RECOMMEND TRAILS 
-                    if questions_asked >= 5:
+                    if questions_asked >= 3:
                         
                         # Broad Spatial Isolation Pool
                         spatial_filtered_trails = filter_trails_spatial(
@@ -250,7 +250,7 @@ def main():
                                 # Fetch raw database values for display clarity
                                 difficulty_num = trail.get("custom_difficulty_score", 1)
                                 distance = trail.get("distance_km", "N/A")
-                                density = analysis.get("density_val") or trail.get("regional_tourist_density", 0.0)
+                                density = analysis.get("density_val") 
                                 crowd_flag = ""
                                 
                                 if 1000 <= density < 2500:

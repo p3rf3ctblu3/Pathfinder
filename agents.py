@@ -8,21 +8,21 @@ from pydantic import BaseModel, Field
 
 load_dotenv()
 
-# groq_key = os.environ.get("GROQ_API_KEY")
-
-# shared_llm = LLM(
-#     model="groq/llama-3.3-70b-versatile",
-#     temperature=0.0,                   
-#     api_key=groq_key 
-# )
-
-gemini_key = os.environ.get("GEMINI_API_KEY")
+groq_key = os.environ.get("GROQ_API_KEY")
 
 shared_llm = LLM(
-    model="gemini/gemini-2.5-flash",    
-    temperature=0.0,                    
-    api_key=gemini_key 
+    model="groq/llama-3.3-70b-versatile",
+    temperature=0.0,                   
+    api_key=groq_key 
 )
+
+# gemini_key = os.environ.get("GEMINI_API_KEY")
+
+# shared_llm = LLM(
+#     model="gemini/gemini-2.5-flash",    
+#     temperature=0.0,                    
+#     api_key=gemini_key 
+# )
 
 #  User Profile Schema
 class UserProfileSchema(BaseModel):
@@ -92,43 +92,6 @@ class ProfileUpdateSchema(BaseModel):
     )
 
 # AGENTS
-
-def evaluate_interests_with_llm(user_interests: list, trail_description: str) -> float:
-    """
-    Uses a fast LLM call to semantically score how well the 
-    trail description satisfies the user's specific interests.
-    """
-    if not user_interests or not trail_description:
-        return 0.0
-        
-    interests_str = ", ".join(user_interests)
-    
-    # Example prompt using your existing LLM infrastructure
-    prompt = f"""
-    You are an expert hiking guide analyst. 
-    Rate how well the following trail description matches the user's list of interests.
-    
-    User Interests: {interests_str}
-    Trail Description: {trail_description}
-    
-    Provide a match score as a float between 0.0 (no match at all) and 1.0 (perfect semantic match).
-    Respond ONLY with the float number. Do not include any other text.
-    """
-
-    # -------------- EXACT SYNTAX DEPENDS ON LLM WE USE ----------------
-    try:
-        # Use CrewAI's .call() method
-        response = shared_llm.call(
-            messages=[{"role": "user", "content": prompt}]
-        )
-        
-        match = re.search(r"\d+\.\d+|\d+", response.strip())
-        if match:
-            return max(0.0, min(1.0, float(match.group())))
-        return 0.0
-    except Exception as e:
-        print(f"Groq CrewAI Call Error: {e}")
-        return 0.0
 
 def run_gatekeeper_agent(user_input: str, current_profile: dict) -> ProfileUpdateSchema:
     """
@@ -306,3 +269,44 @@ class PathfinderAnalystCrew:
             
         # Standard fallback weights if processing hits an exceptional network block
         return {"difficulty_multiplier": 0.5, "duration_multiplier": 0.5, "interests_multiplier": 0.5}
+
+    def evaluate_trail_interests_with_agent(self, user_interests: list, trail_description: str) -> float:
+        """
+        Creates a dynamic CrewAI Task forcing the Analyst Agent 
+        to evaluate the semantic match of a single trail description.
+        """
+        if not user_interests or not trail_description:
+            return 0.0
+
+        analyst = self.agent_factory.intent_analyst()
+        interests_str = ", ".join(user_interests)
+        
+        interest_task = Task(
+            description=(
+                f"Compare the hiker's interests against the following trail description:\n\n"
+                f"Hiker Interests: {interests_str}\n"
+                f"Trail Description: {trail_description}\n\n"
+                f"Rate how well the trail satisfies these interests on a scale from 0.0 to 1.0.\n"
+                f"Rules:\n"
+                f"- 1.0 means perfect alignment (e.g., they want mythology and it describes ancient ruins).\n"
+                f"- 0.0 means absolute zero alignment.\n"
+                f"- You MUST respond ONLY with the raw float number (e.g., '0.75'). Do not include any commentary."
+            ),
+            expected_output="A single float number between 0.0 and 1.0 representing the semantic match score.",
+            agent=analyst
+        )
+        
+        try:
+            # Execute synchronously
+            response = analyst.execute_task(interest_task)
+            
+            # Clean and extract the float using regex
+            match = re.search(r"\d+\.\d+|\d+", str(response).strip())
+            if match:
+                return max(0.0, min(1.0, float(match.group())))
+            return 0.0
+            
+        except Exception as e:
+            print(f"Agent Interest Task Failed: {e}")
+            return 0.0
+
