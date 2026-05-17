@@ -22,3 +22,14 @@ FOR ORS to function correctly to generate accesible area close to user, you must
 ORS_API_KEY=<your-ors-key>
 
 The app uses Streamlit for the UI and CrewAI for clean management of AI agents and task execution.
+
+
+SHORT DEMO WALKTHROUGH
+
+
+https://github.com/user-attachments/assets/2ca8dc12-256c-492a-90c4-b9884644b088
+
+
+APP DEBUG MODE SCREENSHOT
+
+<img width="1898" height="924" alt="Screenshot From 2026-05-17 11-45-30-1" src="https://github.com/user-attachments/assets/7bd2f396-1ddf-4f0f-986b-ed832235c972" />
