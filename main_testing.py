@@ -1,12 +1,9 @@
 import streamlit as st
 from streamlit_js_eval import streamlit_js_eval as st_js, get_geolocation
-import threading
-from agents import PathfinderCrew, WaymarkedDirectoryManager, PathfinderAnalystCrew, run_gatekeeper_agent
+from agents import PathfinderCrew, PathfinderAnalystCrew, run_gatekeeper_agent
 from shapely.geometry import shape, Point
 import openrouteservice
 from geopy.geocoders import Nominatim
-import folium
-from streamlit_folium import st_folium
 import os 
 import time 
 import math
@@ -82,26 +79,24 @@ def calculate_trail_match_scores(trail, profile, difficulty_mult=0.33, duration_
     
     Weights are safely adjusted via dynamic analyst multipliers.
     """
-    # 1. INITIALIZE BASICS
     score_difficulty = 0.0
     score_duration = 0.0
-    score_interests = 0.0  # Default value is 0.0
+    score_interests = 0.0  
     
     target_difficulty = profile.get("hiker_intent") if profile.get("hiker_intent") is not None else profile.get("hiker_expertise")
     min_user_dur = profile.get("min_trail_duration_hours")
     max_user_dur = profile.get("max_trail_duration_hours")
     user_interests = profile.get("interests", [])
     
-    # Ensure user_interests is always treated as a list structure
     if isinstance(user_interests, str):
         user_interests = [user_interests]
     
-    # 2. STEP 1: DIFFICULTY MATCH (Strict Binary Gate)
+    # DIFFICULTY MATCH (Strict Binary Gate)
     if target_difficulty is not None:
         if trail.get("custom_difficulty_score") == target_difficulty:
             score_difficulty = 1.0
             
-    # 3. STEP 2: CALCULATE TRAIL DURATION (Pace = 4 km/h fallback)
+    # CALCULATE TRAIL DURATION (Pace = 4 km/h)
     trail_duration = trail.get("duration_hours")
     if trail_duration is None:
         distance_km = float(trail.get("distance_km", 0.0))
@@ -109,7 +104,7 @@ def calculate_trail_match_scores(trail, profile, difficulty_mult=0.33, duration_
     else:
         trail_duration = float(trail_duration)
 
-    # 4. STEP 3: DURATION MATCH LOGIC (Decay scaling)
+    # DURATION MATCH LOGIC (Decay scaling)
     if trail_duration > 0:
         if min_user_dur is not None and max_user_dur is not None:
             min_d = float(min_user_dur)
@@ -140,38 +135,42 @@ def calculate_trail_match_scores(trail, profile, difficulty_mult=0.33, duration_
                 score_duration = max(0.0, 1.0 - distance_away)
         else:
             score_duration = 1.0
-
-    # 5. STEP 4: INTEREST KEYWORD MATCH ENGINE (New Logic Subsystem)
-    trail_description = trail.get("description", "")
     
+    trail_description = trail.get("description", "")
     if user_interests and trail_description:
         matched_keywords_count = 0
-        
         for keyword in user_interests:
-            if not keyword:
-                continue
-            # Compile regex with word boundaries and case insensitivity flags 
-            # to handle plural variations or mixed capitalization safely
+            if not keyword: continue
             pattern = re.compile(rf"\b{re.escape(str(keyword).strip())}\b", re.IGNORECASE)
             if pattern.search(trail_description):
                 matched_keywords_count += 1
-        
-        # Calculate score: Add 0.25 per matched item, capped at a maximum value of 1.0
         score_interests = min(1.0, matched_keywords_count * 0.25)
 
-    # 6. STEP 5: APPLY ANALYST WEIGHT MULTIPLIERS INCLUDING NEW INTEREST PROFILE KEY
-    total_composite_score = (
+    # Extract the NUTS3 region code from the current trail data block
+    trail_nuts3 = trail.get("nuts3_code") or "UNKNOWN"
+    
+    crowding_data = calculate_crowding_penalty(nuts3_code=trail_nuts3)
+    penalty_multiplier = crowding_data["applied_match_penalty"] 
+
+    # APPLY WEIGHT MULTIPLIERS
+    base_composite_score = (
         (score_difficulty * float(difficulty_mult)) + 
         (score_duration * float(duration_mult)) + 
         (score_interests * float(interests_mult))
     )
+
+    final_composite_score = max(0.0, base_composite_score - penalty_multiplier)
     
     return {
-        "composite_score": round(total_composite_score, 3),
+        "composite_score": round(final_composite_score, 3),
         "difficulty_match": score_difficulty,
         "duration_match": round(score_duration, 2),
-        "interests_match_score": round(score_interests, 2), # Exposing sub-score for transparency
-        "calculated_duration": round(trail_duration, 2)
+        "interests_match_score": round(score_interests, 2),
+        "calculated_duration": round(trail_duration, 2),
+        
+        "crowding_index": crowding_data["crowding_index_1_to_5"],
+        "crowding_label": crowding_data["crowding_description"],
+        "penalty_subtracted": penalty_multiplier
     }
 
 # ==================================
@@ -433,23 +432,19 @@ def main():
                         if isinstance(st.session_state.current_profile.get("interests"), str):
                             st.session_state.current_profile["interests"] = [st.session_state.current_profile["interests"]]
 
-                    # Calculate exactly how many questions the bot has asked so far.
-                    # We count the 'assistant' roles in history, minus 1 to ignore the initial welcome message greeting.
+                    
                     questions_asked = sum(1 for m in st.session_state.messages if m["role"] == "assistant") - 1
 
-                    # 2. Extract state variables for our strict Multi-Gate Check
                     profile = st.session_state.current_profile
                     strategy = profile.get("spatial_strategy", "NONE")
                     
-                    # Fallback strategy adjustment if the LLM didn't choose one but we reached the question limit
                     if strategy == "NONE" or strategy is None:
                         strategy = "GEOLOCATOR"
 
-                    # ==============================================================================
                     # RECOMMEND TRAILS 
-                    # ==============================================================================
+                   
                     if questions_asked >= 5:
-                        
+
                         # 1. Broad Spatial Isolation Pool
                         spatial_filtered_trails = filter_trails_spatial(
                             trails=trails_data, 
@@ -536,11 +531,10 @@ def main():
                             # Commit structured data array back to operational session states
                             st.session_state["active_viable_trails"] = final_ranked_trails
 
-                            # D. Enriched text UI display update
                             assistant_response += f"\n\n**Analyst Multipliers Applied:**\n- Difficulty Weight: `{diff_w}`\n- Duration Weight: `{dur_w}`\n"
                             assistant_response += f"\n### 🥾 Ranked Trails list:\n"
                             
-                            for trail in final_ranked_trails[:10]:  # Limit print layout rendering block to top 10 results
+                            for trail in final_ranked_trails[:10]:  
                                 name = trail.get("name", "Unnamed Route")
                                 analysis = trail["match_analysis"]
 
@@ -558,14 +552,13 @@ def main():
                                     crowd_flag = " 🛑 **[FLAG: Extreme Crowding - Overtourism Saturated]**"
 
 
-                                # Format distance text if it exists
                                 distance_str = f"{distance} km" if distance != "N/A" else "Unknown distance"
 
                                 assistant_response += (
                                     f"- **{name}** ➔ **Match: {analysis['composite_score']*100:.1f}%**{crowd_flag}\n"
                                     f"(Diff Match: `{analysis['difficulty_match']}`, "
                                     f"Dur Match: `{analysis['duration_match']}` | est: `{analysis['calculated_duration']} hrs`)\n"
-                                    f"  * *Trail Specs:* Difficulty Score: {difficulty_num}/6 | Est. Duration: `{analysis['calculated_duration']} hrs` ({distance_str})\n"
+                                    f"  * *Trail Specs:* Difficulty Score: {difficulty_num}/6 | Est. Duration: `{analysis['calculated_duration']} hrs` ({distance_str}){crowd_flag}\n"
                                 )
                         else:
                             st.session_state["active_viable_trails"] = []
@@ -580,17 +573,11 @@ def main():
                                 "unlock a fresh batch of trails. **Let me know what you'd like to adjust!**"
                             )
                             
-                            # 3. Save the fallback response to chat logs so the context history doesn't break
                             st.session_state.messages.append({"role": "assistant", "content": fallback_text})
-                            
-                            # 4. Render it directly to the Streamlit UI layout
                             st.markdown(fallback_text)
                     
                     else:
-                        # CONVERSATION ONGOING GATE (We haven't reached 5 questions yet)
                         st.session_state["active_viable_trails"] = []
-                        
-                        # Pass the agent's next natural, creative guide question to the user
                         assistant_response = crew_result.get("response", "Tell me more about your ideal hike!")
                                         
                 except Exception as e:

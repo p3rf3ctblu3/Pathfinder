@@ -24,9 +24,7 @@ shared_llm = LLM(
     api_key=gemini_key 
 )
 
-# ==============================================================================
-# PHASE 1: Zero-Hallucination User Profile Schema
-# ==============================================================================
+#  User Profile Schema
 class UserProfileSchema(BaseModel):
     hiker_expertise: Optional[int] = Field(
         default=None, 
@@ -77,92 +75,10 @@ class ExtractionResultSchema(BaseModel):
         description="A warm, rich, enthusiastic response! Acknowledge what they said without repeating explicitly, then naturally ask for just ONE missing piece of info."
     )
 
-# ==============================================================================
-# NEW ANALYST SCHEMAS FOR STRUCTURED EXTRACTION
-# ==============================================================================
 class WeightAnalysisSchema(BaseModel):
     difficulty_multiplier: float = Field(..., description="A float value between 0.0 and 1.0 reflecting how strictly the trail difficulty matters to the user.")
     duration_multiplier: float = Field(..., description="A float value between 0.0 and 1.0 reflecting how strictly the duration window matters to the user.")
 
-# ==============================================================================
-# PHASE 2: Waymarked Master Directory Generator (Direct Cache Builder)
-# ==============================================================================
-class WaymarkedDirectoryManager:
-    CACHE_FILENAME = "greek_trails_directory_enriched.json"
-
-    @classmethod
-    def fetch_all_greek_trails(cls) -> List[dict]:
-        if not os.path.exists(cls.CACHE_FILENAME):
-            print("💾 Cache file missing. Querying Overpass API to generate master registry...")
-            build_status = cls.build_local_directory_cache()
-            if "FAILED" in build_status:
-                raise Exception(build_status)
-
-        with open(cls.CACHE_FILENAME, "r", encoding="utf-8") as f:
-            return json.load(f)
-
-    @staticmethod
-    def build_local_directory_cache() -> str:
-        cache_filename = "greek_trails_directory_enriched.json"
-        overpass_query = """
-        [out:json][timeout:90];
-        area["ISO3166-1"="GR"]["admin_level"="2"]->.greece;
-        (relation["type"="route"]["route"~"hiking|foot|walking"](area.greece););
-        out tags center;
-        """
-        url = "https://overpass-api.de/api/interpreter"
-        
-        try:
-            response = requests.post(url, data={"data": overpass_query}, timeout=60)
-            if response.status_code == 200:
-                elements = response.json().get("elements", [])
-                processed_directory = []
-                
-                for el in elements:
-                    tags = el.get("tags", {})
-                    center = el.get("center", {})
-                    
-                    # Compute custom_difficulty_score (1-6) derived from standard sac_scale
-                    sac = tags.get("sac_scale", "hiking")
-                    difficulty_map = {
-                        "hiking": 1, "mountain_hiking": 2, "demanding_mountain_hiking": 3,
-                        "alpine_hiking": 4, "demanding_alpine_hiking": 5, "difficult_alpine_hiking": 6
-                    }
-                    computed_score = difficulty_map.get(sac, 1)
-
-                    # Dynamic custom parsing rule to find explicit 'duration' tag arrays
-                    duration_val = None
-                    if "duration" in tags:
-                        try:
-                            # If tag is written like "02:30", convert to decimal hours (2.5)
-                            if ":" in tags["duration"]:
-                                h, m = map(float, tags["duration"].split(":"))
-                                duration_val = h + (m / 60.0)
-                            else:
-                                duration_val = float(tags["duration"])
-                        except ValueError:
-                            pass
-
-                    processed_directory.append({
-                        "osm_id": el.get("id"),
-                        "name": tags.get("name", tags.get("ref", f"Waymarked Route {el.get('id')}")),
-                        "sac_scale": sac,
-                        "custom_difficulty_score": computed_score,
-                        "distance_km": float(tags.get("distance")) if tags.get("distance") else None,
-                        "duration_hours": duration_val,
-                        "lat": center.get("lat"),
-                        "lon": center.get("lon"),
-                        "description": tags.get("description", "")
-                    })
-                
-                with open(cache_filename, "w", encoding="utf-8") as f:
-                    json.dump(processed_directory, f, ensure_ascii=False, indent=2)
-                return f"SUCCESS_CREATED_{len(processed_directory)}_ENTRIES"
-        except Exception as e:
-            return f"CACHE_GENERATION_FAILED: {str(e)}"
-        return "NO_DATA_RETURNED"
-
-# 1. Define the exact schema the Agent MUST return
 class ProfileUpdateSchema(BaseModel):
     updated_profile_fields: Dict[str, Any] = Field(
         description="Dictionary of keys and values to add or update in the user profile."
@@ -174,7 +90,8 @@ class ProfileUpdateSchema(BaseModel):
         description="Set to True if the user changed the physical location/region of their hike."
     )
 
-# 2. Configure the Gatekeeper Agent Task
+# AGENTS
+
 def run_gatekeeper_agent(user_input: str, current_profile: dict) -> ProfileUpdateSchema:
     """
     An isolated, specialized agent task that handles user state mutations.
@@ -193,19 +110,15 @@ def run_gatekeeper_agent(user_input: str, current_profile: dict) -> ProfileUpdat
     - If they change difficulty, adjust hacker_expertise or hiker_intent.
     """
     
-    # Force the LLM to respond strictly using your Pydantic schema
     structured_llm = shared_llm.with_structured_output(ProfileUpdateSchema)
     
     try:
         agent_delta = structured_llm.invoke(gatekeeper_prompt)
         return agent_delta
     except Exception:
-        # Safe fallback structure if the agent hits a schema error
         return ProfileUpdateSchema(updated_profile_fields={}, fields_to_remove=[], reset_gps=False)
 
-# ==============================================================================
-# PHASE 3: Define your Factory Agents
-# ==============================================================================
+
 class PathfinderAgents:
     def user_profiler(self) -> Agent:
         return Agent(
@@ -245,9 +158,7 @@ class PathfinderAgents:
             verbose=True
         )
 
-# ==============================================================================
-# PHASE 4: The Crew Orchestrators Called by main.py
-# ==============================================================================
+
 class PathfinderCrew:
     def __init__(self):
         self.agent_factory = PathfinderAgents()
@@ -315,9 +226,7 @@ class PathfinderCrew:
             "response": "That sounds like an adventure! Tell me, how much time do you have for this hike?"
         }
 
-# ==============================================================================
-# NEW CLASS: PathfinderAnalystCrew
-# ==============================================================================
+
 class PathfinderAnalystCrew:
     def __init__(self):
         self.agent_factory = PathfinderAgents()
@@ -356,4 +265,4 @@ class PathfinderAnalystCrew:
             print(f"Analyst extraction parsing error: {e}")
             
         # Standard fallback weights if processing hits an exceptional network block
-        return {"difficulty_multiplier": 0.5, "duration_multiplier": 0.5}
+        return {"difficulty_multiplier": 0.5, "duration_multiplier": 0.5, "interests_multiplier": 0.5}
