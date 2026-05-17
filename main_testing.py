@@ -12,6 +12,8 @@ import time
 import math
 import re
 
+# INCLUDES LIVE JSON SIDE WINDOW AND PRINTS MULTIPLIERS AND SCORES FOR ALL RECOMMENDED TRAILS
+
 # =========================================
 # PROCESS EUROSTAT DATA FOR TOURISM PENALTY
 # =========================================
